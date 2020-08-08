@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -376,6 +377,11 @@ func getCSRFToken(r *http.Request) string {
 	return csrfToken.(string)
 }
 
+var (
+	userMap    = make(map[int64]*User)
+	userMapMux = sync.RWMutex{}
+)
+
 func getUser(r *http.Request) (user User, errCode int, errMsg string) {
 	session := getSession(r)
 	userID, ok := session.Values["user_id"]
@@ -397,10 +403,22 @@ func getUser(r *http.Request) (user User, errCode int, errMsg string) {
 
 func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err error) {
 	user := User{}
+	userMapMux.RLock()
+	if val, ok := userMap[userID]; ok {
+		userSimple.ID = val.ID
+		userSimple.AccountName = val.AccountName
+		userSimple.NumSellItems = val.NumSellItems
+		userMapMux.RUnlock()
+		return userSimple, err
+	}
+
+	userMapMux.Lock()
+	defer userMapMux.Unlock()
 	err = sqlx.Get(q, &user, "SELECT * FROM `users` WHERE `id` = ?", userID)
 	if err != nil {
 		return userSimple, err
 	}
+	userMap[user.ID] = &user
 	userSimple.ID = user.ID
 	userSimple.AccountName = user.AccountName
 	userSimple.NumSellItems = user.NumSellItems
@@ -523,6 +541,24 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 		if cate.ParentID != 0 {
 			cate.ParentCategoryName = categoryMap[cate.ParentID].CategoryName
 		}
+	}
+
+	// userSimpleをオンメモリにする
+	userMapMux.Lock()
+	defer userMapMux.Unlock()
+
+	userMap = make(map[int64]*User)
+	users := []*User{}
+	err = dbx.Select(&users, "SELECT * FROM users")
+
+	if err != nil {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	for _, user := range users {
+		userMap[user.ID] = user
 	}
 
 	res := resInitialize{
@@ -922,6 +958,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// 1st page
+		// TODO UNIONに変えられる？
 		err := tx.Select(&items,
 			"SELECT * FROM `items` WHERE (`seller_id` = ? OR `buyer_id` = ?) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
 			user.ID,
@@ -2045,6 +2082,12 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 	}
 	tx.Commit()
 
+	// Add sell counts and update lastBump(userのUPDATEに伴っての対応)
+	userMapMux.Lock()
+	userMap[seller.ID].NumSellItems++
+	userMap[seller.ID].LastBump = now
+	userMapMux.Unlock()
+
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(resSell{ID: itemID})
 }
@@ -2153,6 +2196,10 @@ func postBump(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx.Commit()
+	// Update lastBump(userのUPDATEに伴っての対応)
+	userMapMux.Lock()
+	userMap[seller.ID].LastBump = now
+	userMapMux.Unlock()
 
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(&resItemEdit{
@@ -2299,6 +2346,9 @@ func postRegister(w http.ResponseWriter, r *http.Request) {
 		AccountName: accountName,
 		Address:     address,
 	}
+
+	// ユーザー登録に伴ってキャッシュに追加
+	getUserSimpleByID(dbx, userID)
 
 	session := getSession(r)
 	session.Values["user_id"] = u.ID
