@@ -280,6 +280,8 @@ func init() {
 }
 
 func main() {
+	// 同一ホストへの最大コネクション数(defaultは2) ref: https://qiita.com/ono_matope/items/60e96c01b43c64ed1d18
+	http.DefaultTransport.(*http.Transport).MaxIdleConnsPerHost = 1000
 	host := os.Getenv("MYSQL_HOST")
 	if host == "" {
 		host = "127.0.0.1"
