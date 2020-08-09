@@ -19,6 +19,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/sessions"
 	"github.com/jmoiron/sqlx"
+	"github.com/thoas/go-funk"
 	goji "goji.io"
 	"goji.io/pat"
 	"golang.org/x/crypto/bcrypt"
@@ -684,12 +685,28 @@ func getNewCategoryItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// var categoryIDs []int
+	// err = dbx.Select(&categoryIDs, "SELECT id FROM `categories` WHERE parent_id=?", rootCategory.ID)
+	// if err != nil {
+	// 	log.Print(err)
+	// 	outputErrorMsg(w, http.StatusInternalServerError, "db error")
+	// 	return
+	// }
 	var categoryIDs []int
-	err = dbx.Select(&categoryIDs, "SELECT id FROM `categories` WHERE parent_id=?", rootCategory.ID)
-	if err != nil {
-		log.Print(err)
-		outputErrorMsg(w, http.StatusInternalServerError, "db error")
-		return
+	if rootCategory.ID == 1 {
+		categoryIDs = []int{2, 3, 4, 5, 6}
+	} else if rootCategory.ID == 10 {
+		categoryIDs = []int{11, 12, 13, 14, 15}
+	} else if rootCategory.ID == 20 {
+		categoryIDs = []int{21, 22, 23, 24}
+	} else if rootCategory.ID == 30 {
+		categoryIDs = []int{34, 35, 33, 32, 31}
+	} else if rootCategory.ID == 40 {
+		categoryIDs = []int{41, 42, 43, 44, 45}
+	} else if rootCategory.ID == 50 {
+		categoryIDs = []int{51, 52, 53, 54, 55, 56}
+	} else if rootCategory.ID == 60 {
+		categoryIDs = []int{61, 62, 63, 64, 65, 66}
 	}
 
 	query := r.URL.Query()
@@ -757,13 +774,45 @@ func getNewCategoryItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	itemSimples := []ItemSimple{}
-	for _, item := range items {
-		seller, err := getUserSimpleByID(dbx, item.SellerID)
+	// change to use go-funk
+	userIDs := funk.Map(items, func(i *Item) interface{} {
+		return i.SellerID
+	}).([]int64)
+
+	boughtItems := funk.Filter(items, func(i *Item) bool {
+		return i.BuyerID != 0
+	}).([]*Item)
+
+	buyerIDs := funk.Map(boughtItems, func(i *Item) interface{} {
+		return i.BuyerID
+	}).([]int64)
+
+	userIDs = append(userIDs, buyerIDs...)
+
+	userSimples := []UserSimple{}
+	for _, id := range userIDs {
+		userSimple, err := getUserSimpleByID(dbx, id)
 		if err != nil {
-			outputErrorMsg(w, http.StatusNotFound, "seller not found")
+			log.Print(err)
+			outputErrorMsg(w, http.StatusInternalServerError, "db error")
 			return
 		}
+		userSimples = append(userSimples, userSimple)
+
+	}
+
+	userByID := funk.Map(userSimples, func(u *UserSimple) (int64, *UserSimple) {
+		return u.ID, u
+	}).(map[int64]*UserSimple)
+
+	itemSimples := []ItemSimple{}
+	for _, item := range items {
+		seller := userByID[item.SellerID]
+		// seller, err := getUserSimpleByID(dbx, item.SellerID)
+		// if err != nil {
+		// 	outputErrorMsg(w, http.StatusNotFound, "seller not found")
+		// 	return
+		// }
 		category, err := getCategoryByID(dbx, item.CategoryID)
 		if err != nil {
 			outputErrorMsg(w, http.StatusNotFound, "category not found")
@@ -772,7 +821,7 @@ func getNewCategoryItems(w http.ResponseWriter, r *http.Request) {
 		itemSimples = append(itemSimples, ItemSimple{
 			ID:         item.ID,
 			SellerID:   item.SellerID,
-			Seller:     &seller,
+			Seller:     seller,
 			Status:     item.Status,
 			Name:       item.Name,
 			Price:      item.Price,
